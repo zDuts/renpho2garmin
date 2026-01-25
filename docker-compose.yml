@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  renpho-garmin-sync:
+    build: .
+    image: renpho-garmin-sync:latest
+    container_name: renpho_garmin_sync
+    restart: unless-stopped
+    environment:
+      - RENPHO_EMAIL=your_renpho_email@example.com
+      - RENPHO_PASSWORD=your_renpho_password
+      - GARMIN_EMAIL=your_garmin_email@example.com
+      - GARMIN_PASSWORD=your_garmin_password
+      - RUN_BACKLOG=false # Set to true to sync all historical data on first run
+      - TZ=Europe/London # Set your timezone
+    volumes:
+      - ./data:/app/data # Potential for storing session tokens if implemented
