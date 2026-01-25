@@ -2,8 +2,7 @@ version: '3.8'
 
 services:
   renpho-garmin-sync:
-    build: .
-    image: renpho-garmin-sync:latest
+    image: zduts/renpho-garmin-sync:latest
     container_name: renpho_garmin_sync
     restart: unless-stopped
     environment:
