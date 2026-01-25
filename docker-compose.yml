@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   renpho-garmin-sync:
     image: zduts/renpho-garmin-sync:latest
