@@ -123,18 +123,17 @@ class RenphoHealthClient:
         
         logger.info(f"Login successful. User ID: {self.user_id}")
 
-    def get_latest_measurement(self):
+    def get_measurement(self, date_obj=None):
         """
-        Fetches the latest daily measurement.
-        The endpoint 'dailyCalories' uses today's date to fetch status/data.
+        Fetches the daily measurement for a specific date.
         """
-        today = datetime.now().strftime("%Y-%m-%d")
-        logger.info(f"Fetching data for {today}...")
+        if date_obj is None:
+            date_obj = datetime.now()
+            
+        date_str = date_obj.strftime("%Y-%m-%d")
+        logger.info(f"Fetching data for {date_str}...")
         
-        data = self._api_call(ENDPOINT_DATA, {"data": today})
-        
-        # The data structure seems to contain 'fourElectrodeWeight' or 'eightElectrodeWeight'
-        # inside the response.
+        data = self._api_call(ENDPOINT_DATA, {"data": date_str})
         
         measurement = (
             data.get("fourElectrodeWeight") 
@@ -143,19 +142,12 @@ class RenphoHealthClient:
         )
         
         if not measurement:
-            logger.warning("No weight data found in today's response.")
-            # Fallback: Check if user_info has weight (last known)
-            if self.user_info and self.user_info.get("weight"):
-                 logger.info("Using last known weight from user profile.")
-                 return {
-                     "weight": self.user_info.get("weight"),
-                     "timestamp": datetime.now().timestamp(), # Approximate
-                     "bodyfat": None # Profile might not have this detailed
-                 }
+            # Only warn if checking today, otherwise silent for backlog holes
+            if date_obj.date() == datetime.now().date():
+                 logger.warning(f"No weight data found for {date_str}.")
             return None
 
         # Extract fields
-        # Note: API returns mixed camelCase keys
         return {
             "weight": measurement.get("weight"),
             "bodyfat": measurement.get("bodyfat"),
@@ -166,12 +158,50 @@ class RenphoHealthClient:
             "timestamp": measurement.get("localCreatedAt", datetime.now().timestamp())
         }
 
-def sync_data(backlog=False):
-    # Note: This Renpho Health API endpoint (dailyCalories) seems designed to return
-    # the *current* state or latest measurement, not a full history list.
-    # Backlog implementation might require finding a 'history' endpoint, but 
-    # for now we will focus on sync-latest.
+def process_day(client, garmin, date_obj):
+    data = client.get_measurement(date_obj)
+    if not data:
+        return False
+        
+    weight = data.get('weight')
     
+    # timestamp from API is likely millis or seconds. 
+    ts = data.get('timestamp')
+    
+    # Ensure ts is a number (it might come as a string from API)
+    try:
+        ts = float(ts)
+    except (ValueError, TypeError):
+        # Try parsing "YYYY-MM-DD HH:MM:SS"
+        try:
+            dt_obj = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+            ts = dt_obj.timestamp()
+        except ValueError:
+            ts = date_obj.timestamp() # Fallback to query date
+
+    # If ts is large int (millis), convert to seconds
+    if ts > 4000000000: 
+        ts = ts / 1000
+        
+    dt_str = datetime.fromtimestamp(ts).isoformat()
+    
+    try:
+        garmin.add_body_composition(
+            timestamp=dt_str,
+            weight=weight,
+            percent_fat=data.get('bodyfat'),
+            percent_hydration=data.get('water'),
+            visceral_fat_mass=data.get('visfat'),
+            bone_mass=data.get('bone'),
+            muscle_mass=data.get('muscle')
+        )
+        logger.info(f"Uploaded: {dt_str} - {weight}kg")
+        return True
+    except Exception as e:
+        logger.error(f"Upload failed for {dt_str}: {e}")
+        return False
+
+def sync_data(backlog=False):
     logger.info("Renpho Health -> Garmin Sync Started")
     
     renpho_email = os.environ.get('RENPHO_EMAIL')
@@ -184,65 +214,53 @@ def sync_data(backlog=False):
         return
 
     try:
-        # Renpho Health
+        # Renpho Health Login
         client = RenphoHealthClient(renpho_email, renpho_password)
         client.login()
-        
-        data = client.get_latest_measurement()
-        if not data:
-            logger.info("No data available to sync.")
-            return
-            
-        weight = data.get('weight')
-        logger.info(f"Latest Weight: {weight}kg")
         
         # Garmin Login
         garmin = Garmin(garmin_email, garmin_password)
         garmin.login()
         
-        # timestamp from API is likely millis or seconds. 
-        ts = data.get('timestamp')
-        
-        # Ensure ts is a number (it might come as a string from API)
-        try:
-            ts = float(ts)
-        except (ValueError, TypeError):
-            # Try parsing "YYYY-MM-DD HH:MM:SS"
-            try:
-                dt_obj = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
-                ts = dt_obj.timestamp()
-            except ValueError:
-                logger.warning(f"Could not parse timestamp '{ts}', using current time.")
-                ts = datetime.now().timestamp()
-
-        # If ts is large int (millis), convert to seconds
-        if ts > 4000000000: 
-            ts = ts / 1000
+        # Determine date range
+        if backlog:
+            start_date_str = os.environ.get('SYNC_START_DATE')
+            if start_date_str:
+                start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+                logger.info(f"Backlog requested from {start_date_str}")
+            else:
+                # Default to 365 days if not specified
+                start_date = datetime.now() - timedelta(days=365)
+                logger.info("Backlog requested (default: last 365 days)")
+                
+            end_date = datetime.now()
             
-        dt_str = datetime.fromtimestamp(ts).isoformat()
-        
-        garmin.add_body_composition(
-            timestamp=dt_str,
-            weight=weight,
-            percent_fat=data.get('bodyfat'),
-            percent_hydration=data.get('water'),
-            visceral_fat_mass=data.get('visfat'),
-            bone_mass=data.get('bone'),
-            muscle_mass=data.get('muscle')
-        )
-        logger.info(f"Successfully uploaded to Garmin: {dt_str}")
+            uploaded_count = 0
+            current_date = start_date
+            while current_date <= end_date:
+                if process_day(client, garmin, current_date):
+                    uploaded_count += 1
+                current_date += timedelta(days=1)
+                time.sleep(1) # Pace requests
+                
+            logger.info(f"Backlog sync complete. Uploaded {uploaded_count} entries.")
+            
+        else:
+            # Just today
+            process_day(client, garmin, datetime.now())
 
     except Exception as e:
         logger.error(f"Sync failed: {e}")
 
 def job():
-    sync_data()
+    sync_data(backlog=False)
 
 if __name__ == "__main__":
     logger.info("Service Started (Renpho Health API)")
     
     # Immediate Sync
-    sync_data()
+    is_backlog = os.environ.get('RUN_BACKLOG', 'false').lower() == 'true'
+    sync_data(backlog=is_backlog)
     
     schedule.every().day.at("03:00").do(job)
     while True:
