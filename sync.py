@@ -183,7 +183,21 @@ def process_day(client, garmin, date_obj):
     if ts > 4000000000: 
         ts = ts / 1000
         
-    dt_str = datetime.fromtimestamp(ts).isoformat()
+    dt_obj = datetime.fromtimestamp(ts)
+    dt_str = dt_obj.isoformat()
+    
+    # Validation: If we requested a specific date_obj (backlog), 
+    # verify the returned timestamp matches that day.
+    # Allow 24h buffer for timezone differences, but if it matches 
+    # "today" when we asked for "last year", it's a fallback response to ignore.
+    if date_obj.date() != datetime.now().date(): # If we are NOT asking for today
+        data_date = dt_obj.date()
+        requested_date = date_obj.date()
+        
+        # If the data date is significantly different (e.g. more than 1 day off)
+        if abs((data_date - requested_date).days) > 1:
+            logger.info(f"Skipping: Requested {requested_date}, but API returned data for {data_date} (likely latest fallback).")
+            return False
     
     try:
         garmin.add_body_composition(
