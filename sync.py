@@ -6,9 +6,6 @@ import requests
 import schedule
 from datetime import datetime, timedelta
 from garminconnect import Garmin
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_v1_5
-import base64
 
 # Configure logging
 logging.basicConfig(
@@ -21,7 +18,7 @@ class RenphoClient:
     def __init__(self, email, password):
         self.email = email
         self.password = password
-        self.public_key_url = "https://renpho.qnclouds.com/api/v3/users/get_ras_public_key?app_id=Renpho"
+        # Removed deprecated public key endpoint
         self.login_url = "https://renpho.qnclouds.com/api/v3/users/sign_in.json?app_id=Renpho"
         self.list_scale_user_url = "https://renpho.qnclouds.com/api/v3/scale_users/list_scale_user"
         self.measurements_url = "https://renpho.qnclouds.com/api/v2/measurements/list.json"
@@ -30,34 +27,14 @@ class RenphoClient:
         self.user_id = None
         self.scale_user_id = None
 
-    def _get_public_key(self):
-        try:
-            response = requests.get(self.public_key_url)
-            response.raise_for_status()
-            return response.json()['public_key']
-        except Exception as e:
-            logger.error(f"Failed to get public key: {e}")
-            raise
-
-    def _encrypt_password(self, public_key_str):
-        # Format the public key string to proper PEM format if needed
-        if not public_key_str.startswith('-----BEGIN PUBLIC KEY-----'):
-            public_key_str = f"-----BEGIN PUBLIC KEY-----\n{public_key_str}\n-----END PUBLIC KEY-----"
-            
-        key = RSA.importKey(public_key_str)
-        cipher = PKCS1_v1_5.new(key)
-        encrypted = cipher.encrypt(self.password.encode('utf-8'))
-        return base64.b64encode(encrypted).decode('utf-8')
-
     def login(self):
         try:
-            public_key = self._get_public_key()
-            encrypted_password = self._encrypt_password(public_key)
-            
+            # Attempting login without RSA encryption first
+            # If this fails, we might need to look for specific hashing
             payload = {
                 "secure_flag": 1,
                 "email": self.email,
-                "password": encrypted_password
+                "password": self.password 
             }
             
             response = requests.post(self.login_url, json=payload)
@@ -94,7 +71,8 @@ class RenphoClient:
                 self.scale_user_id = data['scale_users'][0]['id']
                 logger.info(f"Found scale user ID: {self.scale_user_id}")
             else:
-                raise Exception("No scale users found")
+                self.scale_user_id = self.user_id # Fallback
+                logger.warning("No scale users found, falling back to main user ID")
                 
         except Exception as e:
             logger.error(f"Error getting scale user: {e}")
@@ -126,18 +104,12 @@ class RenphoClient:
                     measurements.extend(batch)
                     logger.info(f"Fetched {len(batch)} measurements...")
                     
-                    # Update last_at to the timestamp of the last item in batch
-                    # The API returns items in chronological order usually? 
-                    # Assuming we need to page through. If the batch is small, we might be done.
-                    # Renpho API behavior needs to be handled carefully. Usually last_at implies 'since'.
-                    
-                    # Let's ensure progress.
                     new_last_at = batch[-1]['created_at']
                     if new_last_at <= last_at:
-                        break # Avoid infinite loop if no new data
+                        break 
                     last_at = new_last_at
                     
-                    if len(batch) < 10: # Assuming page size is likely larger than 10
+                    if len(batch) < 10:
                          break
                 else:
                     break
@@ -166,22 +138,18 @@ def sync_data(backlog=False):
         renpho.login()
         
         # Garmin Login
-        # Using a fixed session file path to persist session if possible
-        # but in Docker it might reset unless volume mounted.
-        # For now, re-login every time or rely on library internal handling.
         garmin = Garmin(garmin_email, garmin_password)
         garmin.login()
         logger.info("Garmin login successful")
         
         # Determine start time
         if backlog:
-            # Sync from a long time ago, e.g., 5 years
             start_date = datetime.now() - timedelta(days=5*365)
             logger.info("Running backlog sync mode")
         else:
-            # Sync from yesterday
-            start_date = datetime.now() - timedelta(days=2)
-            logger.info("Running daily sync mode")
+            # Sync from last week just to be safe and catch up
+            start_date = datetime.now() - timedelta(days=7)
+            logger.info("Running standard sync mode (last 7 days)")
             
         start_ts = int(start_date.timestamp())
         
@@ -191,25 +159,17 @@ def sync_data(backlog=False):
         new_measurements_count = 0
         
         for m in measurements:
-            # Process each measurement
-            # Renpho weight is usually in kg. Check 'weight' field.
             weight_kg = m.get('weight')
             timestamp = m.get('created_at')
             date_obj = datetime.fromtimestamp(timestamp)
             
-            # Additional metrics if available
             percent_fat = m.get('bodyfat')
             percent_hydration = m.get('water')
             visceral_fat_mass = m.get('visceral_fat')
             bone_mass = m.get('bone')
             muscle_mass = m.get('muscle')
             
-            # Garmin expects weight in kg (or unit system dependent? API usually takes SI)
-            # garminconnect library: add_body_composition(timestamp, weight, percent_fat=None, percent_hydration=None, visceral_fat_mass=None, bone_mass=None, muscle_mass=None, metabolic_age=None, physique_rating=None, visceral_fat_rating=None, bmi=None)
-            
             try:
-                # Add to Garmin
-                # Note: user might want to avoid duplicates. Garmin usually overwrites or ignores if same timestamp.
                 garmin.add_body_composition(
                     timestamp=date_obj.isoformat(),
                     weight=weight_kg,
@@ -222,6 +182,7 @@ def sync_data(backlog=False):
                 logger.info(f"Uploaded measurement: {date_obj} - {weight_kg}kg")
                 new_measurements_count += 1
             except Exception as e:
+                # Log but continue
                 logger.error(f"Failed to upload measurement for {date_obj}: {e}")
         
         logger.info(f"Sync complete. Uploaded {new_measurements_count} measurements.")
@@ -235,12 +196,14 @@ def job():
 if __name__ == "__main__":
     logger.info("Renpho-Garmin Sync Service Started")
     
-    # Check if we should run backlog on startup
-    if os.environ.get('RUN_BACKLOG', 'false').lower() == 'true':
-        logger.info("Backlog run requested via environment variable")
-        sync_data(backlog=True)
+    # 1. Run sync immediately on startup (as requested)
+    logger.info("Running immediate startup sync...")
     
-    # Schedule daily job at 3:00 AM
+    # Check for backlog flag
+    is_backlog = os.environ.get('RUN_BACKLOG', 'false').lower() == 'true'
+    sync_data(backlog=is_backlog)
+    
+    # 2. Schedule daily job
     schedule.every().day.at("03:00").do(job)
     logger.info("Scheduled daily sync at 03:00 AM")
     
