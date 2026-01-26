@@ -2,13 +2,11 @@ import os
 import time
 import json
 import logging
-import requests
+import datetime
+import fitbit
 import schedule
-from datetime import datetime, timedelta
+import requests
 from garminconnect import Garmin
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_v1_5
-import base64
 
 # Configure logging
 logging.basicConfig(
@@ -17,214 +15,121 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Hardcoded Public Key from Renpho App/Community findings
-RENPHO_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
-MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC+25I2upukpfQ7rIaaTZtVE744
-u2zV+HaagrUhDOTq8fMVf9yFQvEZh2/HKxFudUxP0dXUa8F6X4XmWumHdQnum3zm
-Jr04fz2b2WCcN0ta/rbF2nYAnMVAk2OJVZAMudOiMWhcxV1nNJiKgTNNr13de0EQ
-IiOL2CUBzu+HmIfUbQIDAQAB
------END PUBLIC KEY-----"""
+TOKEN_FILE = '/app/data/fitbit_token.json'
 
-class RenphoClient:
-    def __init__(self, email, password):
-        self.email = email
-        self.password = password
-        self.login_url = "https://renpho.qnclouds.com/api/v3/users/sign_in.json?app_id=Renpho"
-        self.list_scale_user_url = "https://renpho.qnclouds.com/api/v3/scale_users/list_scale_user"
-        self.measurements_url = "https://renpho.qnclouds.com/api/v2/measurements/list.json"
-        
-        self.session_key = None
-        self.user_id = None
-        self.scale_user_id = None
+class FitbitClient:
+    def __init__(self, client_id, client_secret):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.client = None
+        self.load_client()
 
-    def _encrypt_password(self):
-        try:
-            key = RSA.importKey(RENPHO_PUBLIC_KEY)
-            cipher = PKCS1_v1_5.new(key)
-            encrypted = cipher.encrypt(self.password.encode('utf-8'))
-            return base64.b64encode(encrypted).decode('utf-8')
-        except Exception as e:
-            logger.error(f"Encryption failed: {e}")
-            raise
+    def load_client(self):
+        if not os.path.exists(TOKEN_FILE):
+            logger.error(f"Token file not found at {TOKEN_FILE}. Please run get_fitbit_token.py first.")
+            raise Exception("Fitbit token not found")
 
-    def login(self):
-        try:
-            encrypted_password = self._encrypt_password()
-            
-            payload = {
-                "secure_flag": 1,
-                "email": self.email,
-                "password": encrypted_password
-            }
-            
-            response = requests.post(self.login_url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            
-            if 'terminal_user_session_key' in data:
-                self.session_key = data['terminal_user_session_key']
-                self.user_id = data['id']
-                logger.info("Renpho login successful")
-                
-                # Fetch scale users to get the correct user ID for measurements
-                self._get_scale_user()
-            else:
-                logger.error(f"Login failed: {data}")
-                raise Exception(f"Renpho login failed: {data.get('status_message', 'Unknown error')}")
-                
-        except Exception as e:
-            logger.error(f"Error during Renpho login: {e}")
-            raise
+        with open(TOKEN_FILE, 'r') as f:
+            token = json.load(f)
 
-    def _get_scale_user(self):
-        try:
-            params = {
-                "locale": "en",
-                "terminal_user_session_key": self.session_key
-            }
-            response = requests.get(self.list_scale_user_url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            if 'scale_users' in data and len(data['scale_users']) > 0:
-                # Typically the first user is the main user
-                self.scale_user_id = data['scale_users'][0]['id']
-                logger.info(f"Found scale user ID: {self.scale_user_id}")
-            else:
-                self.scale_user_id = self.user_id
-                logger.warning("No scale users found, falling back to main user ID")
-                
-        except Exception as e:
-            logger.error(f"Error getting scale user: {e}")
-            raise
+        self.client = fitbit.Fitbit(
+            self.client_id,
+            self.client_secret,
+            access_token=token.get('access_token'),
+            refresh_token=token.get('refresh_token'),
+            expires_at=token.get('expires_at'),
+            refresh_cb=self.refresh_callback
+        )
 
-    def get_measurements(self, start_timestamp):
+    def refresh_callback(self, token):
+        """Called when the token is refreshed. Save it."""
+        logger.info("Fitbit token refreshed. Saving...")
+        with open(TOKEN_FILE, 'w') as f:
+            json.dump(token, f)
+
+    def get_weight_logs(self, start_date):
         """
-        Get measurements since start_timestamp (Unix timestamp)
+        Fetch weight logs from start_date (YYYY-MM-DD) to today.
+        Fitbit API allows fetching body/log/weight/date/[base-date]/[end-date].json
         """
         try:
-            measurements = []
-            last_at = start_timestamp
-            
-            while True:
-                params = {
-                    "user_id": self.scale_user_id,
-                    "last_at": last_at,
-                    "locale": "en",
-                    "app_id": "Renpho",
-                    "terminal_user_session_key": self.session_key
-                }
-                
-                response = requests.get(self.measurements_url, params=params)
-                response.raise_for_status()
-                data = response.json()
-                
-                if 'measurements' in data and data['measurements']:
-                    batch = data['measurements']
-                    measurements.extend(batch)
-                    logger.info(f"Fetched {len(batch)} measurements...")
-                    
-                    new_last_at = batch[-1]['created_at']
-                    if new_last_at <= last_at:
-                        break 
-                    last_at = new_last_at
-                    
-                    # Safety break for huge backlogs to avoid memory issues or timeouts in one go, 
-                    # but here we just want to fetch all.
-                    if len(batch) < 10:
-                         break
-                else:
-                    break
-            
-            return measurements
-            
+            today = datetime.date.today().strftime("%Y-%m-%d")
+            data = self.client.get_bodyweight(base_date=start_date, end_date=today)
+            return data.get('weight', [])
         except Exception as e:
-            logger.error(f"Error getting measurements: {e}")
+            logger.error(f"Error fetching Fitbit data: {e}")
             raise
 
-def sync_data(backlog=False):
+def sync_data():
     logger.info("Starting synchronization process...")
     
-    renpho_email = os.environ.get('RENPHO_EMAIL')
-    renpho_password = os.environ.get('RENPHO_PASSWORD')
+    fitbit_id = os.environ.get('FITBIT_CLIENT_ID')
+    fitbit_secret = os.environ.get('FITBIT_CLIENT_SECRET')
     garmin_email = os.environ.get('GARMIN_EMAIL')
     garmin_password = os.environ.get('GARMIN_PASSWORD')
+    start_date_str = os.environ.get('SYNC_START_DATE')
     
-    if not all([renpho_email, renpho_password, garmin_email, garmin_password]):
-        logger.error("Missing environment variables. Please check your configuration.")
+    if not all([fitbit_id, fitbit_secret, garmin_email, garmin_password]):
+        logger.error("Missing environment variables.")
         return
 
+    # Default start date: yesterday if not specified
+    if not start_date_str:
+        start_date_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    
     try:
-        # Renpho Login
-        renpho = RenphoClient(renpho_email, renpho_password)
-        renpho.login()
-        
-        # Garmin Login
+        # Fitbit
+        fb = FitbitClient(fitbit_id, fitbit_secret)
+        weights = fb.get_weight_logs(start_date_str)
+        logger.info(f"Fetched {len(weights)} weight entries from Fitbit.")
+
+        if not weights:
+            logger.info("No data to sync.")
+            return
+
+        # Garmin
         garmin = Garmin(garmin_email, garmin_password)
         garmin.login()
-        logger.info("Garmin login successful")
-        
-        # Determine start time
-        if backlog:
-            start_date = datetime.now() - timedelta(days=5*365)
-            logger.info("Running backlog sync mode")
-        else:
-            start_date = datetime.now() - timedelta(days=7)
-            logger.info("Running standard sync mode (last 7 days)")
-            
-        start_ts = int(start_date.timestamp())
-        
-        measurements = renpho.get_measurements(start_ts)
-        logger.info(f"Found {len(measurements)} measurements to process")
-        
-        new_measurements_count = 0
-        
-        for m in measurements:
-            weight_kg = m.get('weight')
-            timestamp = m.get('created_at')
-            date_obj = datetime.fromtimestamp(timestamp)
-            
-            percent_fat = m.get('bodyfat')
-            percent_hydration = m.get('water')
-            visceral_fat_mass = m.get('visceral_fat')
-            bone_mass = m.get('bone')
-            muscle_mass = m.get('muscle')
-            
+        logger.info("Garmin login successful.")
+
+        success_count = 0
+        for entry in weights:
             try:
+                weight_kg = entry.get('weight')
+                date_str = entry.get('date') # YYYY-MM-DD
+                time_str = entry.get('time') # HH:MM:SS
+                fat = entry.get('fat') 
+                
+                dt_str = f"{date_str}T{time_str}"
+                
                 garmin.add_body_composition(
-                    timestamp=date_obj.isoformat(),
+                    timestamp=dt_str,
                     weight=weight_kg,
-                    percent_fat=percent_fat,
-                    percent_hydration=percent_hydration,
-                    visceral_fat_mass=visceral_fat_mass,
-                    bone_mass=bone_mass,
-                    muscle_mass=muscle_mass
+                    percent_fat=fat
                 )
-                logger.info(f"Uploaded measurement: {date_obj} - {weight_kg}kg")
-                new_measurements_count += 1
+                logger.info(f"Uploaded: {dt_str} - {weight_kg}kg")
+                success_count += 1
             except Exception as e:
-                # Log but continue
-                logger.error(f"Failed to upload measurement for {date_obj}: {e}")
-        
-        logger.info(f"Sync complete. Uploaded {new_measurements_count} measurements.")
+                logger.error(f"Failed to upload entry {entry}: {e}")
+
+        logger.info(f"Sync complete. Successful: {success_count}/{len(weights)}")
 
     except Exception as e:
         logger.error(f"Fatal error during sync: {e}")
 
 def job():
-    sync_data(backlog=False)
+    sync_data()
 
 if __name__ == "__main__":
-    logger.info("Renpho-Garmin Sync Service Started")
+    logger.info("Renpho(Fitbit)-Garmin Sync Service Started")
     
-    # Run sync immediately on startup
-    logger.info("Running immediate startup sync...")
-    is_backlog = os.environ.get('RUN_BACKLOG', 'false').lower() == 'true'
-    sync_data(backlog=is_backlog)
+    # Run immediate sync
+    logger.info("Running startup sync...")
+    sync_data()
     
-    # Schedule daily job
-    schedule.every().day.at("03:00").do(job)
-    logger.info("Scheduled daily sync at 03:00 AM")
+    # Schedule
+    schedule.every().day.at("03:30").do(job) # 3:30 AM (giving time for Fitbit sync)
+    logger.info("Scheduled daily sync at 03:30 AM")
     
     while True:
         schedule.run_pending()

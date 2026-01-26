@@ -1,4 +1,6 @@
 requests
 garminconnect
 schedule
-pycryptodome
+fitbit
+oauthlib
+requests-oauthlib
