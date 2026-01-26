@@ -279,7 +279,10 @@ if __name__ == "__main__":
     # Run immediate sync on startup
     sync_data()
     
-    schedule.every().day.at("03:00").do(job)
+    sync_time = os.environ.get('SYNC_TIME', '03:00')
+    schedule.every().day.at(sync_time).do(job)
+    logger.info(f"Scheduled daily sync at {sync_time}")
+    
     while True:
         schedule.run_pending()
         time.sleep(60)

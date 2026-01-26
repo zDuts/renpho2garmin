@@ -8,6 +8,7 @@ services:
       - RENPHO_PASSWORD=your_renpho_password
       - GARMIN_EMAIL=your_garmin_email
       - GARMIN_PASSWORD=your_garmin_password
+      - SYNC_TIME=03:00 # Daily sync time (HH:MM)
       - TZ=Europe/London
     volumes:
       - ./data:/app/data
