@@ -4,11 +4,11 @@ services:
     container_name: renpho_garmin_sync
     restart: unless-stopped
     environment:
-      - FITBIT_CLIENT_ID=your_fitbit_client_id
-      - FITBIT_CLIENT_SECRET=your_fitbit_client_secret
+      - RENPHO_EMAIL=your_renpho_email
+      - RENPHO_PASSWORD=your_renpho_password
       - GARMIN_EMAIL=your_garmin_email
       - GARMIN_PASSWORD=your_garmin_password
-      - SYNC_START_DATE=2024-01-01 # Optional: Start date for backlog (YYYY-MM-DD)
+      - RUN_BACKLOG=false
       - TZ=Europe/London
     volumes:
       - ./data:/app/data
