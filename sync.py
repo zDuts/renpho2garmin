@@ -236,32 +236,36 @@ def sync_data(backlog=False):
         garmin = Garmin(garmin_email, garmin_password)
         garmin.login()
         
-        # Determine date range
-        if backlog:
-            start_date_str = os.environ.get('SYNC_START_DATE')
-            if start_date_str:
-                start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-                logger.info(f"Backlog requested from {start_date_str}")
-            else:
-                # Default to 365 days if not specified
-                start_date = datetime.now() - timedelta(days=365)
-                logger.info("Backlog requested (default: last 365 days)")
-                
-            end_date = datetime.now()
-            
-            uploaded_count = 0
-            current_date = start_date
-            while current_date <= end_date:
-                if process_day(client, garmin, current_date):
-                    uploaded_count += 1
-                current_date += timedelta(days=1)
-                time.sleep(1) # Pace requests
-                
-            logger.info(f"Backlog sync complete. Uploaded {uploaded_count} entries.")
-            
-        else:
-            # Just today
-            process_day(client, garmin, datetime.now())
+def sync_data(backlog=False):
+    logger.info("Renpho Health -> Garmin Sync Started")
+    
+    renpho_email = os.environ.get('RENPHO_EMAIL')
+    renpho_password = os.environ.get('RENPHO_PASSWORD')
+    garmin_email = os.environ.get('GARMIN_EMAIL')
+    garmin_password = os.environ.get('GARMIN_PASSWORD')
+    
+    if not all([renpho_email, renpho_password, garmin_email, garmin_password]):
+        logger.error("Missing credentials.")
+        return
+
+    try:
+        # Renpho Health Login
+        client = RenphoHealthClient(renpho_email, renpho_password)
+        client.login()
+        
+        # Garmin Login
+        garmin = Garmin(garmin_email, garmin_password)
+        garmin.login()
+        
+        # NOTE: The Renpho Health 'dailyCalories' endpoint only returns the LATEST measurement.
+        # It does NOT support fetching specific historical dates.
+        # Therefore, true 'backlog' syncing is impossible with this specific endpoint.
+        # We will strictly sync the LATEST available measurement if it matches today's date.
+        
+        logger.info("Fetching latest measurement from Renpho...")
+        # We pass today's date just to satisfy the payload requirement
+        today = datetime.now()
+        process_day(client, garmin, today)
 
     except Exception as e:
         logger.error(f"Sync failed: {e}")
@@ -272,9 +276,8 @@ def job():
 if __name__ == "__main__":
     logger.info("Service Started (Renpho Health API)")
     
-    # Immediate Sync
-    is_backlog = os.environ.get('RUN_BACKLOG', 'false').lower() == 'true'
-    sync_data(backlog=is_backlog)
+    # Run immediate sync on startup
+    sync_data()
     
     schedule.every().day.at("03:00").do(job)
     while True:
