@@ -207,8 +207,13 @@ def sync_data(backlog=False):
         try:
             ts = float(ts)
         except (ValueError, TypeError):
-            logger.warning(f"Could not parse timestamp '{ts}', using current time.")
-            ts = datetime.now().timestamp()
+            # Try parsing "YYYY-MM-DD HH:MM:SS"
+            try:
+                dt_obj = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+                ts = dt_obj.timestamp()
+            except ValueError:
+                logger.warning(f"Could not parse timestamp '{ts}', using current time.")
+                ts = datetime.now().timestamp()
 
         # If ts is large int (millis), convert to seconds
         if ts > 4000000000: 
