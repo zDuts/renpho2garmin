@@ -215,48 +215,6 @@ def process_day(client, garmin, date_obj):
         logger.error(f"Upload failed for {dt_str}: {e}")
         return False
 
-def sync_data(backlog=False):
-    logger.info("Renpho Health -> Garmin Sync Started")
-    
-    renpho_email = os.environ.get('RENPHO_EMAIL')
-    renpho_password = os.environ.get('RENPHO_PASSWORD')
-    garmin_email = os.environ.get('GARMIN_EMAIL')
-    garmin_password = os.environ.get('GARMIN_PASSWORD')
-    
-    if not all([renpho_email, renpho_password, garmin_email, garmin_password]):
-        logger.error("Missing credentials.")
-        return
-
-    try:
-        # Renpho Health Login
-        client = RenphoHealthClient(renpho_email, renpho_password)
-        client.login()
-        
-        # Garmin Login
-        garmin = Garmin(garmin_email, garmin_password)
-        garmin.login()
-        
-def sync_data(backlog=False):
-    logger.info("Renpho Health -> Garmin Sync Started")
-    
-    renpho_email = os.environ.get('RENPHO_EMAIL')
-    renpho_password = os.environ.get('RENPHO_PASSWORD')
-    garmin_email = os.environ.get('GARMIN_EMAIL')
-    garmin_password = os.environ.get('GARMIN_PASSWORD')
-    
-    if not all([renpho_email, renpho_password, garmin_email, garmin_password]):
-        logger.error("Missing credentials.")
-        return
-
-    try:
-        # Renpho Health Login
-        client = RenphoHealthClient(renpho_email, renpho_password)
-        client.login()
-        
-        # Garmin Login
-        garmin = Garmin(garmin_email, garmin_password)
-        garmin.login()
-        
         # NOTE: The Renpho Health 'dailyCalories' endpoint only returns the LATEST measurement.
         # It does NOT support fetching specific historical dates.
         # Therefore, true 'backlog' syncing is impossible with this specific endpoint.
