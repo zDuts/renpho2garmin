@@ -201,13 +201,17 @@ def sync_data(backlog=False):
         garmin.login()
         
         # timestamp from API is likely millis or seconds. 
-        # localCreatedAt often is a timestamp int.
         ts = data.get('timestamp')
-        # If ts is large int, maybe millis?
-        now_ts = datetime.now().timestamp()
         
-        # Defensive check for timestamp format
-        if ts and ts > 4000000000: # millis
+        # Ensure ts is a number (it might come as a string from API)
+        try:
+            ts = float(ts)
+        except (ValueError, TypeError):
+            logger.warning(f"Could not parse timestamp '{ts}', using current time.")
+            ts = datetime.now().timestamp()
+
+        # If ts is large int (millis), convert to seconds
+        if ts > 4000000000: 
             ts = ts / 1000
             
         dt_str = datetime.fromtimestamp(ts).isoformat()
