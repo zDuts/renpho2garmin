@@ -1,3 +1,4 @@
 requests
 garminconnect
 schedule
+pycryptodome

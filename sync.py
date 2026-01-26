@@ -6,6 +6,9 @@ import requests
 import schedule
 from datetime import datetime, timedelta
 from garminconnect import Garmin
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
+import base64
 
 # Configure logging
 logging.basicConfig(
@@ -14,11 +17,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Hardcoded Public Key from Renpho App/Community findings
+RENPHO_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC+25I2upukpfQ7rIaaTZtVE744
+u2zV+HaagrUhDOTq8fMVf9yFQvEZh2/HKxFudUxP0dXUa8F6X4XmWumHdQnum3zm
+Jr04fz2b2WCcN0ta/rbF2nYAnMVAk2OJVZAMudOiMWhcxV1nNJiKgTNNr13de0EQ
+IiOL2CUBzu+HmIfUbQIDAQAB
+-----END PUBLIC KEY-----"""
+
 class RenphoClient:
     def __init__(self, email, password):
         self.email = email
         self.password = password
-        # Removed deprecated public key endpoint
         self.login_url = "https://renpho.qnclouds.com/api/v3/users/sign_in.json?app_id=Renpho"
         self.list_scale_user_url = "https://renpho.qnclouds.com/api/v3/scale_users/list_scale_user"
         self.measurements_url = "https://renpho.qnclouds.com/api/v2/measurements/list.json"
@@ -27,14 +37,24 @@ class RenphoClient:
         self.user_id = None
         self.scale_user_id = None
 
+    def _encrypt_password(self):
+        try:
+            key = RSA.importKey(RENPHO_PUBLIC_KEY)
+            cipher = PKCS1_v1_5.new(key)
+            encrypted = cipher.encrypt(self.password.encode('utf-8'))
+            return base64.b64encode(encrypted).decode('utf-8')
+        except Exception as e:
+            logger.error(f"Encryption failed: {e}")
+            raise
+
     def login(self):
         try:
-            # Attempting login without RSA encryption first
-            # If this fails, we might need to look for specific hashing
+            encrypted_password = self._encrypt_password()
+            
             payload = {
                 "secure_flag": 1,
                 "email": self.email,
-                "password": self.password 
+                "password": encrypted_password
             }
             
             response = requests.post(self.login_url, json=payload)
@@ -50,7 +70,7 @@ class RenphoClient:
                 self._get_scale_user()
             else:
                 logger.error(f"Login failed: {data}")
-                raise Exception("Renpho login failed")
+                raise Exception(f"Renpho login failed: {data.get('status_message', 'Unknown error')}")
                 
         except Exception as e:
             logger.error(f"Error during Renpho login: {e}")
@@ -71,7 +91,7 @@ class RenphoClient:
                 self.scale_user_id = data['scale_users'][0]['id']
                 logger.info(f"Found scale user ID: {self.scale_user_id}")
             else:
-                self.scale_user_id = self.user_id # Fallback
+                self.scale_user_id = self.user_id
                 logger.warning("No scale users found, falling back to main user ID")
                 
         except Exception as e:
@@ -109,6 +129,8 @@ class RenphoClient:
                         break 
                     last_at = new_last_at
                     
+                    # Safety break for huge backlogs to avoid memory issues or timeouts in one go, 
+                    # but here we just want to fetch all.
                     if len(batch) < 10:
                          break
                 else:
@@ -147,7 +169,6 @@ def sync_data(backlog=False):
             start_date = datetime.now() - timedelta(days=5*365)
             logger.info("Running backlog sync mode")
         else:
-            # Sync from last week just to be safe and catch up
             start_date = datetime.now() - timedelta(days=7)
             logger.info("Running standard sync mode (last 7 days)")
             
@@ -196,14 +217,12 @@ def job():
 if __name__ == "__main__":
     logger.info("Renpho-Garmin Sync Service Started")
     
-    # 1. Run sync immediately on startup (as requested)
+    # Run sync immediately on startup
     logger.info("Running immediate startup sync...")
-    
-    # Check for backlog flag
     is_backlog = os.environ.get('RUN_BACKLOG', 'false').lower() == 'true'
     sync_data(backlog=is_backlog)
     
-    # 2. Schedule daily job
+    # Schedule daily job
     schedule.every().day.at("03:00").do(job)
     logger.info("Scheduled daily sync at 03:00 AM")
     
