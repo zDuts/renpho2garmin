@@ -183,12 +183,10 @@ def process_day(client, garmin, date_obj):
     if ts > 4000000000: 
         ts = ts / 1000
         
-    # Correction for Renpho server potential timezone bug (often returns +8h or CST aligned timestamps)
-    # If the timestamp is in the future relative to now (with minute tolerance), assume it includes the +8h offset.
-    # User reported: Actual 23:23 -> Uploaded 07:23 (+8h).
-    if ts > datetime.now().timestamp() + 300: # If > 5 mins in the future
-        logger.info(f"Timestamp {ts} appears to be in the future. Applying -8h correction (Renpho Server Timezone Fix).")
-        ts -= 8 * 3600
+    # Correction for Renpho server timezone bug (returns +8h or CST aligned timestamps)
+    # User requested to ALWAYS deduct 8 hours.
+    logger.info(f"Applying unconditional -8h correction to timestamp {ts} (Renpho Server Timezone Fix).")
+    ts -= 8 * 3600
 
     dt_obj = datetime.fromtimestamp(ts)
     dt_str = dt_obj.isoformat()
